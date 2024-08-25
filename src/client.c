@@ -1,6 +1,7 @@
 #include "client.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +17,8 @@
 
 struct client_t {
   int fd;
+  u_char rdbuff[1500];
+  pthread_mutex_t rdbuff_mutex;
 };
 int _read_msg(int fd, u_char *buff, size_t size) {
   short _rsize = read(fd, buff, 2);
@@ -40,7 +43,7 @@ __readmsg:
 // int init_easymq(struct client_t *client, const char *addr) {}
 struct client_t *create_easymq(const char *address) {
 
-  struct sockaddr_in si={0};
+  struct sockaddr_in si = {0};
   si.sin_family = AF_INET;
   char *next = strstr(address, ":");
   if (!next) {
@@ -49,8 +52,8 @@ struct client_t *create_easymq(const char *address) {
   }
   char ip_address[next - address];
   memmove(ip_address, address, next - address);
-  int port = atoi(next+1);
-  si.sin_port=htons(port);
+  int port = atoi(next + 1);
+  si.sin_port = htons(port);
   if (inet_aton(ip_address, &si.sin_addr) < 0) {
     perror("parse ip address failed");
     return NULL;
@@ -61,8 +64,9 @@ struct client_t *create_easymq(const char *address) {
     close(fd);
     return NULL;
   }
-  struct client_t *result = calloc(1,sizeof(struct client_t));
+  struct client_t *result = calloc(1, sizeof(struct client_t));
   result->fd = fd;
+  pthread_mutex_init(&result->rdbuff_mutex, NULL);
   // printf("fd is %d client %p\n",result->fd,result);
   return result;
 }
@@ -70,6 +74,7 @@ struct client_t *create_easymq(const char *address) {
 int close_easymq(struct client_t *client) {
   int ans = close(client->fd);
   free(client);
+  pthread_mutex_destroy(&client->rdbuff_mutex);
   return ans;
 }
 const uint8_t PUBLISH = 1;
@@ -86,11 +91,15 @@ struct message *read_latest(struct client_t *client, const char *topic,
   long size = send(client->fd, buff, topic_size + 3, 0);
   if (size <= 0)
     return NULL;
-  u_char rdbuff[1500];
+  pthread_mutex_lock(&client->rdbuff_mutex);
+  u_char *rdbuff = client->rdbuff;
+  // u_char rdbuff[1500];
   // read status code
   int vsize = read(client->fd, rdbuff, 1);
-  if (vsize <= 0)
+  if (vsize <= 0) {
+    pthread_mutex_unlock(&client->rdbuff_mutex);
     return NULL;
+  }
   uint8_t status_code = rdbuff[0];
   vsize = _read_msg(client->fd, rdbuff, 1500);
   struct message *ans = malloc(sizeof(struct message));
@@ -99,7 +108,7 @@ struct message *read_latest(struct client_t *client, const char *topic,
   if (content) {
     memmove(content, rdbuff, vsize);
   }
-  memmove(content, rdbuff, vsize);
+  pthread_mutex_unlock(&client->rdbuff_mutex);
   if (status_code == OK) {
     ans->err = NULL;
     ans->content = content;
@@ -123,7 +132,7 @@ struct message *publish(struct client_t *client, const char *topic,
   int size = send(client->fd, buff, topic_size + content_size + 5, 0);
   if (size <= 0)
     return NULL;
-  u_char *temp_buff = calloc(128,1);
+  u_char *temp_buff = calloc(128, 1);
   size = recv(client->fd, temp_buff, 1, 0);
   if (size < 1) {
     free(temp_buff);
@@ -136,7 +145,7 @@ struct message *publish(struct client_t *client, const char *topic,
     fprintf(stderr, "publish msg error cause protocol handshake failed");
     return NULL;
   }
-  struct message *result = calloc(1,sizeof(struct message));
+  struct message *result = calloc(1, sizeof(struct message));
   result->size = size;
   if (status_code == OK) {
     result->err = NULL;
@@ -146,7 +155,7 @@ struct message *publish(struct client_t *client, const char *topic,
     result->err = (char *)temp_buff;
     result->content = NULL;
   } else {
-    fprintf(stderr,"error code %d\n",status_code);
+    fprintf(stderr, "error code %d\n", status_code);
     snprintf((char *)temp_buff, 128,
              "protocol version error unknown status code %d\n", status_code);
     result->err = (char *)temp_buff;

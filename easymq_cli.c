@@ -5,7 +5,7 @@
 #include <unistd.h>
 void *child(void *_) {
   // read msg
-  struct client_t *client = create_easymq("127.0.0.1:7777");
+  struct client_t *client = create_easymq("192.168.200.143:7777");
   if (!client) {
     perror("connect to easymq failed");
     _exit(-1);
@@ -30,7 +30,7 @@ void *child(void *_) {
 void publishtest() {
   char buff[100] = {0};
   int i = 0;
-  struct client_t *client = create_easymq("127.0.0.1:7777");
+  struct client_t *client = create_easymq("192.168.200.143:7777");
   if (!client) {
     perror("connect to easymq failed");
     _exit(-1);
@@ -41,8 +41,11 @@ void publishtest() {
     i++;
     // printf("sender fd is %d pointer %p\n",*(int*)client,client);
     snprintf(buff, 100, "hello easymq %d", i);
-    if (!publish(client, "testC", 5, buff, strlen(buff))) {
+    struct message* msg=publish(client, "testC", 5, buff, strlen(buff));
+    if (!msg) {
       perror("publish msg failed\n");
+    }else{
+      close_message(msg);
     }
     // printf("send msg success client %p\n",client);
     // sleep(1);
